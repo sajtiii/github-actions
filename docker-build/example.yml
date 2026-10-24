@@ -1,0 +1,34 @@
+# Copy to .github/workflows/docker.yml
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: sajtiii/github-actions/docker-build@v1
+        with:
+          platforms: linux/amd64,linux/arm64

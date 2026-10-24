@@ -1,0 +1,43 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  discover:
+    name: Discover actions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      actions: ${{ steps.find.outputs.actions }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Find actions with tests
+        id: find
+        run: |
+          actions=$(find . -mindepth 1 -maxdepth 1 -type d ! -name '.*' -exec test -f '{}/test/entrypoint.sh' ';' -print \
+            | sed 's|^\./||' | sort | jq -Rnc '[inputs]')
+          echo "actions=$actions" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test ${{ matrix.action }}
+    needs: discover
+    if: needs.discover.outputs.actions != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        action: ${{ fromJson(needs.discover.outputs.actions) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run tests
+        env:
+          ACTION: ${{ matrix.action }}
+        run: bash "$ACTION/test/entrypoint.sh"

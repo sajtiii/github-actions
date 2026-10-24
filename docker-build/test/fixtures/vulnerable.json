@@ -1,0 +1,24 @@
+{
+  "Results": [
+    {
+      "Target": "app (alpine 3.22.2)",
+      "Class": "os-pkgs",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2025-0001",
+          "PkgName": "openssl",
+          "InstalledVersion": "3.5.1-r0",
+          "FixedVersion": "3.5.2-r0",
+          "Severity": "CRITICAL"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-0002",
+          "PkgName": "busybox",
+          "InstalledVersion": "1.37.0-r18",
+          "FixedVersion": "1.37.0-r19",
+          "Severity": "HIGH"
+        }
+      ]
+    }
+  ]
+}

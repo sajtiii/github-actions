@@ -1,0 +1,226 @@
+name: Docker build
+description: Build a Docker image, scan it with Trivy and push it to a container registry.
+
+inputs:
+  registry:
+    description: "Choice: ghcr. Target registry."
+    required: false
+    default: ghcr
+  context:
+    description: String. Build context.
+    required: false
+    default: .
+  file:
+    description: String. Path to the Dockerfile. Defaults to Dockerfile in the context.
+    required: false
+    default: ""
+  platforms:
+    description: List, comma-separated. Target platforms. Defaults to the runner's platform.
+    required: false
+    default: ""
+  build-args:
+    description: List, newline-separated. Build arguments.
+    required: false
+    default: ""
+  push:
+    description: Boolean. Push the image to the registry, unless the run is a pull request from a fork or no tag applies.
+    required: false
+    default: "true"
+  variant:
+    description: String of letters, digits, ".", "_" and "-". Name of the matrix variant, for example php8.5. Its tags get a -<variant> suffix, and it gets its own build cache and PR comment.
+    required: false
+    default: ""
+  variant-default:
+    description: Boolean. The variant also gets the tags without the suffix. Needs variant.
+    required: false
+    default: "false"
+
+outputs:
+  image:
+    description: Fully qualified image name.
+    value: ${{ steps.resolve.outputs.image }}
+  tags:
+    description: Generated image tags.
+    value: ${{ steps.meta.outputs.tags }}
+  digest:
+    description: Image digest.
+    value: ${{ steps.build.outputs.digest }}
+  vulnerabilities:
+    description: Number of vulnerabilities found by Trivy. Empty when the scan failed.
+    value: ${{ steps.evaluate.outputs.vulnerabilities }}
+  summary:
+    description: JSON summary of the run, with the resolved build, push, tags, digest, Trivy and signing results.
+    value: ${{ steps.summary.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve inputs
+      id: resolve
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        IMAGE: ${{ github.repository }}
+        CONTEXT: ${{ inputs.context }}
+        FILE: ${{ inputs.file }}
+        PLATFORMS: ${{ inputs.platforms }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        PUSH: ${{ inputs.push }}
+        LATEST: ${{ github.event_name == 'release' }}
+        VARIANT: ${{ inputs.variant }}
+        VARIANT_DEFAULT: ${{ inputs.variant-default }}
+        EVENT_NAME: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        REPOSITORY: ${{ github.repository }}
+        PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+      run: ${{ github.action_path }}/resolve.sh
+
+    - name: Log in to registry
+      if: steps.resolve.outputs.push == 'true'
+      uses: docker/login-action@v4
+      with:
+        registry: ${{ steps.resolve.outputs.host }}
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: ${{ steps.resolve.outputs.image }}
+        flavor: latest=false
+        tags: ${{ steps.resolve.outputs.tags }}
+
+    - name: Set up QEMU
+      if: steps.resolve.outputs.qemu == 'true'
+      uses: docker/setup-qemu-action@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    # Single platform build for scanning, the final build reuses its layers from the builder.
+    # Nightly builds skip the cache, so they pick up base image and package updates.
+    - name: Build image for scanning
+      uses: docker/build-push-action@v7
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ steps.resolve.outputs.file }}
+        load: true
+        push: false
+        platforms: ${{ steps.resolve.outputs.scan-platform }}
+        tags: docker-build-scan:${{ github.run_id }}
+        build-args: ${{ inputs.build-args }}
+        pull: ${{ steps.resolve.outputs.nightly == 'true' }}
+        no-cache: ${{ steps.resolve.outputs.nightly == 'true' }}
+        cache-from: ${{ steps.resolve.outputs.nightly != 'true' && format('type=gha,scope={0}', steps.resolve.outputs.cache-scope) || '' }}
+
+    - name: Scan image with Trivy
+      id: trivy
+      continue-on-error: true
+      uses: aquasecurity/trivy-action@v0.36.0
+      with:
+        image-ref: docker-build-scan:${{ github.run_id }}
+        format: json
+        output: ${{ runner.temp }}/trivy-report.json
+        severity: HIGH,CRITICAL
+        ignore-unfixed: true
+        trivyignores: ${{ steps.resolve.outputs.trivyignores }}
+        exit-code: "0"
+
+    - name: Evaluate scan
+      id: evaluate
+      shell: bash
+      env:
+        SCAN_OUTCOME: ${{ steps.trivy.outcome }}
+        REPORT: ${{ runner.temp }}/trivy-report.json
+        REPORT_MD: ${{ runner.temp }}/trivy-report.md
+        NIGHTLY: ${{ steps.resolve.outputs.nightly }}
+        SEVERITY: HIGH,CRITICAL
+        VARIANT: ${{ inputs.variant }}
+      run: ${{ github.action_path }}/evaluate-scan.sh
+
+    # Pull requests from forks get a read-only token, so they can not be commented on
+    - name: Comment Trivy report on the PR
+      if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      continue-on-error: true
+      uses: marocchino/sticky-pull-request-comment@v3
+      with:
+        header: docker-build-trivy-${{ inputs.variant }}
+        path: ${{ runner.temp }}/trivy-report.md
+
+    - name: Build and push
+      id: build
+      uses: docker/build-push-action@v7
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ steps.resolve.outputs.file }}
+        push: ${{ steps.resolve.outputs.push == 'true' }}
+        platforms: ${{ steps.resolve.outputs.platforms }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: ${{ inputs.build-args }}
+        provenance: mode=max
+        sbom: true
+        pull: ${{ steps.resolve.outputs.nightly == 'true' }}
+        cache-from: ${{ steps.resolve.outputs.nightly != 'true' && format('type=gha,scope={0}', steps.resolve.outputs.cache-scope) || '' }}
+        cache-to: type=gha,mode=max,scope=${{ steps.resolve.outputs.cache-scope }}
+
+    - name: Check signing
+      id: sign
+      if: steps.resolve.outputs.push == 'true' && github.event_name != 'pull_request'
+      shell: bash
+      run: |
+        if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]]; then
+          echo "::warning::The image is not signed, the job needs the id-token write permission"
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install cosign
+      if: steps.sign.outputs.enabled == 'true'
+      uses: sigstore/cosign-installer@v4
+
+    - name: Sign the image
+      id: signing
+      if: steps.sign.outputs.enabled == 'true'
+      shell: bash
+      env:
+        IMAGE: ${{ steps.resolve.outputs.image }}
+        DIGEST: ${{ steps.build.outputs.digest }}
+        COSIGN_LOG: ${{ runner.temp }}/cosign.log
+      run: cosign sign --yes "${IMAGE}@${DIGEST}" 2>&1 | tee "$COSIGN_LOG"
+
+    - name: Summarize
+      id: summary
+      if: always()
+      shell: bash
+      env:
+        VARIANT: ${{ inputs.variant }}
+        IMAGE: ${{ steps.resolve.outputs.image }}
+        REGISTRY: ${{ inputs.registry }}
+        EVENT_NAME: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+        NIGHTLY: ${{ steps.resolve.outputs.nightly }}
+        CONTEXT: ${{ inputs.context }}
+        FILE: ${{ steps.resolve.outputs.file }}
+        PLATFORMS: ${{ steps.resolve.outputs.platforms }}
+        SCAN_PLATFORM: ${{ steps.resolve.outputs.scan-platform }}
+        QEMU: ${{ steps.resolve.outputs.qemu }}
+        BUILD_ARGS: ${{ inputs.build-args }}
+        CACHE_SCOPE: ${{ steps.resolve.outputs.cache-scope }}
+        PUSH_REQUESTED: ${{ inputs.push }}
+        PUSH: ${{ steps.resolve.outputs.push }}
+        PUSH_REASON: ${{ steps.resolve.outputs.push-reason }}
+        TAGS: ${{ steps.meta.outputs.tags }}
+        DIGEST: ${{ steps.build.outputs.digest }}
+        SCAN_OUTCOME: ${{ steps.trivy.outcome }}
+        EVALUATE_OUTCOME: ${{ steps.evaluate.outcome }}
+        VULNERABILITIES: ${{ steps.evaluate.outputs.vulnerabilities }}
+        TRIVYIGNORES: ${{ steps.resolve.outputs.trivyignores }}
+        BUILD_OUTCOME: ${{ steps.build.outcome }}
+        SIGN_ENABLED: ${{ steps.sign.outputs.enabled }}
+        SIGN_OUTCOME: ${{ steps.signing.outcome }}
+        COSIGN_LOG: ${{ runner.temp }}/cosign.log
+      run: ${{ github.action_path }}/summarize.sh
