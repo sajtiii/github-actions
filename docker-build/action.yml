@@ -180,7 +180,7 @@ runs:
 
     - name: Install cosign
       if: steps.sign.outputs.enabled == 'true'
-      uses: sigstore/cosign-installer@v4
+      uses: sigstore/cosign-installer@v3
 
     - name: Sign the image
       id: signing
