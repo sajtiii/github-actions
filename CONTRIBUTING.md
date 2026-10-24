@@ -7,8 +7,17 @@ The script runs with bash from the repository root and must exit non-zero on fai
 
 ## Versioning
 
-Callers pin to a major tag, like `@v1`. After a backwards-compatible change, move the tag:
+Callers pin to the major tag, like `@v1`.
+Every release gets an exact `vX.Y.Z` tag, and the Release workflow moves the major tag to the newest one.
 
 ```sh
-git tag -f v1 && git push -f origin v1
+gh release create v1.2.0 --generate-notes
 ```
+
+| Change                                                  | Release            |
+|---------------------------------------------------------|--------------------|
+| Bug fix                                                 | Patch, `v1.1.1`    |
+| New action, input or output                             | Minor, `v1.2.0`    |
+| Removed or renamed input or output, changed behaviour   | Major, `v2.0.0`    |
+
+A major release creates a new major tag, `v1` stays on the last `v1.x.y`.

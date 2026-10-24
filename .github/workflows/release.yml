@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  major-tag:
+    name: Move the major tag
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.release.prerelease }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Move the major tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag $TAG is not a vX.Y.Z version"
+            exit 1
+          fi
+          major="${TAG%%.*}"
+
+          # A fix released for an older minor version must not move the major tag back
+          latest=$(git ls-remote --tags --refs origin "refs/tags/$major.*" | sed 's|.*refs/tags/||' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          if [[ "$TAG" != "$latest" ]]; then
+            echo "::notice::$TAG is older than $latest, $major stays"
+            exit 0
+          fi
+
+          git tag -f "$major" HEAD
+          git push -f origin "refs/tags/$major"
+          echo "::notice::Moved $major to $TAG"
