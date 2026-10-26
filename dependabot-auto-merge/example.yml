@@ -1,0 +1,17 @@
+# Copy to .github/workflows/dependabot-auto-merge.yml
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: sajtiii/github-actions/dependabot-auto-merge@v1
